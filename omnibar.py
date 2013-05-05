@@ -45,10 +45,10 @@ QLineEdit { background: #313437; color: #d2d2d2; border: none; font-family: Verd
 """
 
 
-class FindItDelegate(QtGui.QStyledItemDelegate):
+class OmnibarDelegate(QtGui.QStyledItemDelegate):
     """QItemDelegate to display items in the listview"""
     def __init__(self, editor, root, parent=None):
-        super(FindItDelegate, self).__init__(parent)
+        super(OmnibarDelegate, self).__init__(parent)
         
         self._editor = editor
         self._root = root + 1
@@ -64,7 +64,7 @@ class FindItDelegate(QtGui.QStyledItemDelegate):
         editortext = self._editor.text()
         
         text = '<span>%s</span>%s' % (option.text[:len(editortext)], option.text[len(editortext):])
-        filepath = path.path(index.data(FindIt.FILE_ROLE))
+        filepath = path.path(index.data(Omnibar.FILE_ROLE))
         filename = '<span>%s</span>%s' % (filepath.name[:len(editortext)], filepath.name[len(editortext):])
         filepath = filepath.parent / filename
         html = '<body><h3>%s</h3>%s</body>' % (text, filepath[self._root:])
@@ -84,7 +84,7 @@ class FindItDelegate(QtGui.QStyledItemDelegate):
         return QtCore.QSize(20, 40)
 
 
-class FindItEvent(FileSystemEventHandler):
+class OmnibarEvent(FileSystemEventHandler):
     """Event Handler for the watchdog loop"""
     def __init__(self, model, command, mask=None):
         self._model = model
@@ -94,8 +94,8 @@ class FindItEvent(FileSystemEventHandler):
     def addRow(self, file_):
         """Adds a row to the model"""
         item = QtGui.QStandardItem(file_.name)
-        item.setData(str(file_), FindIt.FILE_ROLE)
-        item.setData(self._command, FindIt.COMMAND_ROLE)
+        item.setData(str(file_), Omnibar.FILE_ROLE)
+        item.setData(self._command, Omnibar.COMMAND_ROLE)
         self._model.appendRow(item)
     
     def removeRow(self, file_):
@@ -135,11 +135,11 @@ class FindItEvent(FileSystemEventHandler):
             self.addRow(file_)
 
 
-class FindItThread(QtCore.QThread):
+class OmnibarThread(QtCore.QThread):
     """Thread to populate the initial file list"""
     fileAdded = QtCore.pyqtSignal(list)
     def __init__(self, root, mask, *args):
-        super(FindItThread, self).__init__(*args)
+        super(OmnibarThread, self).__init__(*args)
         
         self._root = root
         self._mask = mask
@@ -157,11 +157,11 @@ class FindItThread(QtCore.QThread):
         self.fileAdded.emit(self._queue)
 
 
-class FindIt(QtGui.QMainWindow):
+class Omnibar(QtGui.QMainWindow):
     FILE_ROLE = QtCore.Qt.UserRole + 1
     COMMAND_ROLE = FILE_ROLE + 1
     def __init__(self, root, command, mask=None, custom=None, parent=None):
-        super(FindIt, self).__init__(parent)
+        super(Omnibar, self).__init__(parent)
         
         custom = custom or []
         movie = QtGui.QMovie('./loader.gif')
@@ -192,13 +192,13 @@ class FindIt(QtGui.QMainWindow):
         self._completer.setModel(self._model)
         self._completer.setPopup(view)
         self._completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
-        view.setItemDelegate(FindItDelegate(self._lineedit, len(self._root)))
+        view.setItemDelegate(OmnibarDelegate(self._lineedit, len(self._root)))
         self._lineedit.setCompleter(self._completer)
         self._lineedit.setEnabled(False)
         self._lineedit.setPlaceholderText('Gathering files...')
-        self._lineedit.installEventFilter(FindItEventFilter(self))
+        self._lineedit.installEventFilter(OmnibarEventFilter(self))
         
-        self._worker = FindItThread(root, mask)
+        self._worker = OmnibarThread(root, mask)
         
         self.connect(self._completer, QtCore.SIGNAL('activated(const QModelIndex&)'), self.doit)
         self._worker.fileAdded.connect(self.addFile)
@@ -210,7 +210,7 @@ class FindIt(QtGui.QMainWindow):
             item.setData(cmd[2], self.COMMAND_ROLE)
             self._model.appendRow(item)
         
-        event_handler = FindItEvent(self._model, self._command, mask)
+        event_handler = OmnibarEvent(self._model, self._command, mask)
         self._observer = Observer()
         self._observer.schedule(event_handler, path=root, recursive=True)
         self._observer.start()
@@ -220,7 +220,7 @@ class FindIt(QtGui.QMainWindow):
     def hideEvent(self, event):
         """Override of hideEvent, makes sure we stop the watchdog thread(s)"""
         self._observer.stop()
-        return super(FindIt, self).hideEvent(event)
+        return super(Omnibar, self).hideEvent(event)
     
     def doit(self, index):
         """Handles executing the proper function based on item selection"""
@@ -253,7 +253,7 @@ class FindIt(QtGui.QMainWindow):
         self._lineedit.setFocus()
 
 
-class FindItEventFilter(QtCore.QObject):
+class OmnibarEventFilter(QtCore.QObject):
     """A Simple event filter to close the window when focus is lost"""
     def eventFilter(self, obj, event):
         if event.type() == QtCore.QEvent.FocusOut:
@@ -270,7 +270,7 @@ def func(filepath):
 def main():
     app = QtGui.QApplication(sys.argv)
     
-    win = FindIt('.', func, '*.jpg', [('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')])
+    win = Omnibar('.', func, '*.jpg', [('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')])
     win.show()
     
     sys.exit(app.exec_())
