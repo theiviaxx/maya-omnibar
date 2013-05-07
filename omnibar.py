@@ -25,10 +25,16 @@ import os
 import sys
 import fnmatch
 
-import sip
-sip.setapi('QString', 2)
-sip.setapi('QVariant', 2)
-from PyQt4 import QtGui, QtCore
+try:
+    import sip
+    sip.setapi('QString', 2)
+    sip.setapi('QVariant', 2)
+    from PyQt4 import QtGui, QtCore
+    IS_PYQT = True
+except ImportError:
+    from PySide import QtGui, QtCore
+    IS_PYQT = False
+    
 import path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -63,11 +69,26 @@ class OmnibarDelegate(QtGui.QStyledItemDelegate):
         doc.setDefaultStyleSheet(STYLE)
         editortext = self._editor.text()
         
-        text = '<span>%s</span>%s' % (option.text[:len(editortext)], option.text[len(editortext):])
-        filepath = path.path(index.data(Omnibar.FILE_ROLE))
-        filename = '<span>%s</span>%s' % (filepath.name[:len(editortext)], filepath.name[len(editortext):])
-        filepath = filepath.parent / filename
-        html = '<body><h3>%s</h3>%s</body>' % (text, filepath[self._root:])
+        idx = option.text.find(editortext)
+        
+        text = '%s<span>%s</span>%s' % (
+            option.text[:idx],
+            option.text[idx:idx + len(editortext)],
+            option.text[idx + len(editortext):]
+        )
+        
+        filepath = index.data(Omnibar.FILE_ROLE)
+        if editortext[0] == '#':
+            html = '<body><h3>%s</h3>%s</body>' % (text, filepath)
+        else:
+            filepath = path.path(filepath)
+            filename = '%s<span>%s</span>%s' % (
+                filepath.name[:idx],
+                filepath.name[idx:idx + len(editortext)],
+                filepath.name[idx + len(editortext):]
+            )
+            filepath = filepath.parent / filename
+            html = '<body><h3>%s</h3>%s</body>' % (text, filepath[self._root:])
         doc.setHtml(html)
         
         option.text = ''
@@ -137,7 +158,10 @@ class OmnibarEvent(FileSystemEventHandler):
 
 class OmnibarThread(QtCore.QThread):
     """Thread to populate the initial file list"""
-    fileAdded = QtCore.pyqtSignal(list)
+    if IS_PYQT:
+        fileAdded = QtCore.pyqtSignal(list)
+    else:
+        fileAdded = QtCore.Signal(list)
     def __init__(self, root, mask, *args):
         super(OmnibarThread, self).__init__(*args)
         
@@ -155,6 +179,31 @@ class OmnibarThread(QtCore.QThread):
                 self._queue = []
         
         self.fileAdded.emit(self._queue)
+
+
+class OmniFilterModel(QtGui.QSortFilterProxyModel):
+    def __init__(self, parent):
+        super(OmniFilterModel, self).__init__(parent)
+        
+        self._filter = ''
+    
+    def filterAcceptsRow(self, row, parent):
+        index = self.sourceModel().index(row, 0, parent)
+        modelstr = self.sourceModel().data(index, QtCore.Qt.DisplayRole).lower()
+        
+        return self._filter in modelstr
+    
+    def setFilter(self, string):
+        self._filter = string
+        self.invalidateFilter()
+
+
+class OmniCompleter(QtGui.QCompleter):
+
+    def splitPath(self, path):
+        self.model().setFilter(str(path).lower())
+        
+        return ""
 
 
 class Omnibar(QtGui.QMainWindow):
@@ -179,24 +228,26 @@ class Omnibar(QtGui.QMainWindow):
         self._label.move(self.width() - 24, 0)
         
         self._lineedit = QtGui.QLineEdit(self)
-        self._completer = QtGui.QCompleter(self)
+        self._completer = OmniCompleter(self)
         self._model = QtGui.QStandardItemModel(self)
+        self._proxy = OmniFilterModel(self)
+        self._proxy.setSourceModel(self._model)
         view = QtGui.QListView(self)
-        view.setModel(self._model)
+        view.setModel(self._proxy)
         self._root = path.path(root)
         self._command = command
         
         layout.addWidget(self._lineedit)
         layout.addWidget(view)
         
-        self._completer.setModel(self._model)
+        self._completer.setModel(self._proxy)
         self._completer.setPopup(view)
         self._completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
         view.setItemDelegate(OmnibarDelegate(self._lineedit, len(self._root)))
         self._lineedit.setCompleter(self._completer)
         self._lineedit.setEnabled(False)
         self._lineedit.setPlaceholderText('Gathering files...')
-        self._lineedit.installEventFilter(OmnibarEventFilter(self))
+        #self._lineedit.installEventFilter(OmnibarEventFilter(self))
         
         self._worker = OmnibarThread(root, mask)
         
@@ -221,6 +272,11 @@ class Omnibar(QtGui.QMainWindow):
         """Override of hideEvent, makes sure we stop the watchdog thread(s)"""
         self._observer.stop()
         return super(Omnibar, self).hideEvent(event)
+    
+    def showEvent(self, event):
+        self._lineedit.setText('')
+        
+        return super(Omnibar, self).showEvent(event)
     
     def doit(self, index):
         """Handles executing the proper function based on item selection"""
@@ -270,7 +326,7 @@ def func(filepath):
 def main():
     app = QtGui.QApplication(sys.argv)
     
-    win = Omnibar('.', func, '*.jpg', [('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')])
+    win = Omnibar('.', func, '*.py', [('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')])
     win.show()
     
     sys.exit(app.exec_())
