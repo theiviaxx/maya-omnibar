@@ -158,101 +158,76 @@ class OmnibarEvent(FileSystemEventHandler):
 
 class OmnibarThread(QtCore.QThread):
     """Thread to populate the initial file list"""
-    if IS_PYQT:
-        fileAdded = QtCore.pyqtSignal(list)
-    else:
-        fileAdded = QtCore.Signal(list)
-    def __init__(self, root, mask, *args):
+    def __init__(self, root, mask, model, command, *args):
         super(OmnibarThread, self).__init__(*args)
         
         self._root = root
         self._mask = mask
-        self._queue = []
+        self._model = model
+        self._command = command
     
     def run(self):
         """Main event loop.  Sends signals of batched file paths"""
         for file_ in path.path(self._root).walkfiles(self._mask):
-            if len(self._queue) < 1000:
-                self._queue.append(file_)
-            else:
-                self.fileAdded.emit(self._queue)
-                self._queue = []
-        
-        self.fileAdded.emit(self._queue)
-
-
-class OmniFilterModel(QtGui.QSortFilterProxyModel):
-    def __init__(self, parent):
-        super(OmniFilterModel, self).__init__(parent)
-        
-        self._filter = ''
-    
-    def filterAcceptsRow(self, row, parent):
-        index = self.sourceModel().index(row, 0, parent)
-        modelstr = self.sourceModel().data(index, QtCore.Qt.DisplayRole).lower()
-        
-        return self._filter in modelstr
-    
-    def setFilter(self, string):
-        self._filter = string
-        self.invalidateFilter()
+            item = QtGui.QStandardItem(file_.name)
+            item.setData(str(file_), Omnibar.FILE_ROLE)
+            item.setData(self._command, Omnibar.COMMAND_ROLE)
+            self._model.appendRow(item)
 
 
 class OmniCompleter(QtGui.QCompleter):
 
     def splitPath(self, path):
-        self.model().setFilter(str(path).lower())
+        self.model().setFilterFixedString(str(path).lower())
         
         return ""
 
 
-class Omnibar(QtGui.QMainWindow):
+class Omnibar(QtGui.QLineEdit):
     FILE_ROLE = QtCore.Qt.UserRole + 1
     COMMAND_ROLE = FILE_ROLE + 1
     def __init__(self, root, command, mask=None, custom=None, parent=None):
         super(Omnibar, self).__init__(parent)
         
+        ## -- locals
         custom = custom or []
-        movie = QtGui.QMovie('./loader.gif')
-        
-        self.resize(544, 0)
-        centralwidget = QtGui.QWidget(self)
-        layout = QtGui.QVBoxLayout(centralwidget)
-        self.setCentralWidget(centralwidget)
-        layout.setMargin(0)
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
-        self.setStyleSheet(MAIN_STYLE)
-        
-        self._label = QtGui.QLabel(self)
-        self._label.setMovie(movie)
-        self._label.move(self.width() - 24, 0)
-        
-        self._lineedit = QtGui.QLineEdit(self)
-        self._completer = OmniCompleter(self)
-        self._model = QtGui.QStandardItemModel(self)
-        self._proxy = OmniFilterModel(self)
-        self._proxy.setSourceModel(self._model)
+        movie = QtGui.QMovie(path.path(__file__).parent / 'loader.gif')
         view = QtGui.QListView(self)
-        view.setModel(self._proxy)
+        width = 544
+        height = 26
+        
+        ## -- members
         self._root = path.path(root)
         self._command = command
+        self._completer = OmniCompleter(self)
+        self._label = QtGui.QLabel(self)
+        self._model = QtGui.QStandardItemModel(self)
+        self._proxy = QtGui.QSortFilterProxyModel(self)
+        self._worker = OmnibarThread(root, mask, self._model, self._command)
         
-        layout.addWidget(self._lineedit)
-        layout.addWidget(view)
-        
+        ## -- Setup members
+        self._label.setMovie(movie)
+        self._label.move(width - 24, 8)
         self._completer.setModel(self._proxy)
         self._completer.setPopup(view)
         self._completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
-        view.setItemDelegate(OmnibarDelegate(self._lineedit, len(self._root)))
-        self._lineedit.setCompleter(self._completer)
-        self._lineedit.setEnabled(False)
-        self._lineedit.setPlaceholderText('Gathering files...')
-        #self._lineedit.installEventFilter(OmnibarEventFilter(self))
         
-        self._worker = OmnibarThread(root, mask)
+        ## -- Setup UI
+        self.setMaximumSize(QtCore.QSize(width, height))
+        self.setMinimumSize(QtCore.QSize(width, height))
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        self.setStyleSheet(MAIN_STYLE)
+        self.setCompleter(self._completer)
+        self.setEnabled(False)
+        self.setPlaceholderText('Gathering files...')
+        self.installEventFilter(OmnibarEventFilter(self))
         
+        ## -- Setup locals
+        view.setModel(self._proxy)
+        view.setItemDelegate(OmnibarDelegate(self, len(self._root)))
+        
+        ## -- Events
         self.connect(self._completer, QtCore.SIGNAL('activated(const QModelIndex&)'), self.doit)
-        self._worker.fileAdded.connect(self.addFile)
         self._worker.finished.connect(self.endGather)
         
         for cmd in custom:
@@ -264,6 +239,8 @@ class Omnibar(QtGui.QMainWindow):
         event_handler = OmnibarEvent(self._model, self._command, mask)
         self._observer = Observer()
         self._observer.schedule(event_handler, path=root, recursive=True)
+        
+        ## -- Start threads
         self._observer.start()
         movie.start()
         self._worker.start()
@@ -274,7 +251,7 @@ class Omnibar(QtGui.QMainWindow):
         return super(Omnibar, self).hideEvent(event)
     
     def showEvent(self, event):
-        self._lineedit.setText('')
+        self.setText('')
         
         return super(Omnibar, self).showEvent(event)
     
@@ -293,20 +270,13 @@ class Omnibar(QtGui.QMainWindow):
         if e.key() == QtCore.Qt.Key_Escape:
             self.close()
     
-    def addFile(self, files):
-        """Handler for initial file gatherinng thread.  Adds items to the model"""
-        for file_ in files:
-            item = QtGui.QStandardItem(file_.name)
-            item.setData(str(file_), self.FILE_ROLE)
-            item.setData(self._command, self.COMMAND_ROLE)
-            self._model.appendRow(item)
-    
     def endGather(self):
         """Ends the gathering phase and sets up the UI for the user"""
+        self._proxy.setSourceModel(self._model)
         self._label.deleteLater()
-        self._lineedit.setEnabled(True)
-        self._lineedit.setPlaceholderText('')
-        self._lineedit.setFocus()
+        self.setEnabled(True)
+        self.setPlaceholderText('')
+        self.setFocus()
 
 
 class OmnibarEventFilter(QtCore.QObject):
@@ -325,8 +295,19 @@ def func(filepath):
 
 def main():
     app = QtGui.QApplication(sys.argv)
+    win = QtGui.QMainWindow()
+    central = QtGui.QWidget(win)
+    layout = QtGui.QVBoxLayout(central)
+    win.setCentralWidget(central)
+    omnibar = Omnibar(
+        r'C:\Users\Dixon\Pictures',
+        func,
+        '*.jpg',
+        custom=[('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')],
+        parent=win
+    )
+    layout.addWidget(omnibar)
     
-    win = Omnibar('.', func, '*.py', [('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')])
     win.show()
     
     sys.exit(app.exec_())
