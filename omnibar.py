@@ -68,6 +68,9 @@ class OmnibarDelegate(QtGui.QStyledItemDelegate):
         doc = QtGui.QTextDocument()
         doc.setDefaultStyleSheet(STYLE)
         editortext = self._editor.text()
+        if not isinstance(option, QtGui.QStyleOptionViewItemV4):
+            option = QtGui.QStyleOptionViewItemV4(option)
+            option.text = index.data()
         
         idx = option.text.find(editortext)
         
@@ -107,16 +110,14 @@ class OmnibarDelegate(QtGui.QStyledItemDelegate):
 
 class OmnibarEvent(FileSystemEventHandler):
     """Event Handler for the watchdog loop"""
-    def __init__(self, model, command, mask=None):
+    def __init__(self, model, mask=None):
         self._model = model
-        self._command = command
         self._mask = mask
     
     def addRow(self, file_):
         """Adds a row to the model"""
         item = QtGui.QStandardItem(file_.name)
         item.setData(str(file_), Omnibar.FILE_ROLE)
-        item.setData(self._command, Omnibar.COMMAND_ROLE)
         self._model.appendRow(item)
     
     def removeRow(self, file_):
@@ -158,25 +159,22 @@ class OmnibarEvent(FileSystemEventHandler):
 
 class OmnibarThread(QtCore.QThread):
     """Thread to populate the initial file list"""
-    def __init__(self, root, mask, model, command, *args):
+    def __init__(self, root, mask, model, *args):
         super(OmnibarThread, self).__init__(*args)
         
         self._root = root
         self._mask = mask
         self._model = model
-        self._command = command
     
     def run(self):
         """Main event loop.  Sends signals of batched file paths"""
         for file_ in path.path(self._root).walkfiles(self._mask):
             item = QtGui.QStandardItem(file_.name)
             item.setData(str(file_), Omnibar.FILE_ROLE)
-            item.setData(self._command, Omnibar.COMMAND_ROLE)
             self._model.appendRow(item)
 
 
 class OmniCompleter(QtGui.QCompleter):
-
     def splitPath(self, path):
         self.model().setFilterFixedString(str(path).lower())
         
@@ -185,7 +183,6 @@ class OmniCompleter(QtGui.QCompleter):
 
 class Omnibar(QtGui.QLineEdit):
     FILE_ROLE = QtCore.Qt.UserRole + 1
-    COMMAND_ROLE = FILE_ROLE + 1
     def __init__(self, root, command, mask=None, custom=None, parent=None):
         super(Omnibar, self).__init__(parent)
         
@@ -199,11 +196,12 @@ class Omnibar(QtGui.QLineEdit):
         ## -- members
         self._root = path.path(root)
         self._command = command
+        self._custom = {}
         self._completer = OmniCompleter(self)
         self._label = QtGui.QLabel(self)
         self._model = QtGui.QStandardItemModel(self)
         self._proxy = QtGui.QSortFilterProxyModel(self)
-        self._worker = OmnibarThread(root, mask, self._model, self._command)
+        self._worker = OmnibarThread(root, mask, self._model)
         
         ## -- Setup members
         self._label.setMovie(movie)
@@ -231,12 +229,12 @@ class Omnibar(QtGui.QLineEdit):
         self._worker.finished.connect(self.endGather)
         
         for cmd in custom:
+            self._custom[cmd[0]] = cmd[2]
             item = QtGui.QStandardItem('#%s' % cmd[0])
             item.setData(cmd[1], self.FILE_ROLE)
-            item.setData(cmd[2], self.COMMAND_ROLE)
             self._model.appendRow(item)
         
-        event_handler = OmnibarEvent(self._model, self._command, mask)
+        event_handler = OmnibarEvent(self._model, mask)
         self._observer = Observer()
         self._observer.schedule(event_handler, path=root, recursive=True)
         
@@ -258,12 +256,11 @@ class Omnibar(QtGui.QLineEdit):
     def doit(self, index):
         """Handles executing the proper function based on item selection"""
         self.close()
-        obj = index.data(self.COMMAND_ROLE)
-        if obj == self._command:
-            obj(str(index.data(self.FILE_ROLE)))
-        else:
+        if index.data().startswith('#'):
             ## -- Custom function string
             exec(str(obj), globals())
+        else:
+            self._command(str(index.data(self.FILE_ROLE)))
     
     def keyReleaseEvent(self, e):
         """Closes if the user hits escape"""
@@ -283,7 +280,7 @@ class OmnibarEventFilter(QtCore.QObject):
     """A Simple event filter to close the window when focus is lost"""
     def eventFilter(self, obj, event):
         if event.type() == QtCore.QEvent.FocusOut:
-            self.parent().close()
+            obj.close()
             return True
         else:
             return QtCore.QObject.eventFilter(self, obj, event)
@@ -300,7 +297,7 @@ def main():
     layout = QtGui.QVBoxLayout(central)
     win.setCentralWidget(central)
     omnibar = Omnibar(
-        r'C:\Users\Dixon\Pictures',
+        r'C:\Users\Dixon\Sites\dev\static',
         func,
         '*.jpg',
         custom=[('mycmd', 'some description', 'from pprint import pprint;pprint("xxx")')],
